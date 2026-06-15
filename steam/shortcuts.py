@@ -14,7 +14,7 @@ import glob
 import shutil
 import time
 
-from . import vdf
+from . import vdf, artwork
 from scanners.common import steam_appid, is_windows, env
 
 
@@ -93,7 +93,7 @@ def merge(existing, games, default_tag=True):
             "AppName": g.name,
             "Exe": exe,
             "StartDir": g.steam_start_dir(),
-            "icon": "",
+            "icon": artwork.find_local_icon(g),
             "ShortcutPath": "",
             "LaunchOptions": "",
             "IsHidden": 0,

@@ -24,11 +24,10 @@ SteamGridDB key is configured.
 
 import os
 import json
-import glob
 import urllib.request
 import urllib.parse
 
-from scanners.common import env
+from scanners.common import iter_files
 
 ICON_EXTS = (".ico", ".png", ".exe")
 
@@ -72,11 +71,13 @@ def find_local_icon(game) -> str:
 
 
 def _find_uwp_logo(install: str) -> str:
-    # UWP logos: Square150x150Logo / Square44x44Logo / *.targetsize-*.png etc.
-    candidates = []
-    for pat in ("*Square150x150*.png", "*Square310x310*.png",
-                "*Logo*.png", "*StoreLogo*.png"):
-        candidates += glob.glob(os.path.join(install, "**", pat), recursive=True)
+    # UWP logos: Square150x150Logo / Square310x310Logo / *Logo*.png etc.
+    wanted = ("square150x150", "square310x310", "logo", "storelogo")
+    candidates = [
+        f for f in iter_files(install, max_depth=3)
+        if f.lower().endswith(".png")
+        and any(w in os.path.basename(f).lower() for w in wanted)
+    ]
     if not candidates:
         return ""
     # Prefer the largest file (usually the highest-res logo).
@@ -86,36 +87,31 @@ def _find_uwp_logo(install: str) -> str:
 
 
 def _find_first(install: str, exts) -> str:
-    for root, _d, files in os.walk(install):
-        for f in files:
-            if f.lower().endswith(exts):
-                return os.path.join(root, f)
+    for full in iter_files(install, max_depth=2):
+        if full.lower().endswith(exts):
+            return full
     return ""
 
 
 def _find_best_exe(install: str) -> str:
-    best = None
+    best = ""
     best_score = -1
-    for root, _d, files in os.walk(install):
-        if root[len(install):].count(os.sep) > 2:
+    for full in iter_files(install, max_depth=2):
+        low = os.path.basename(full).lower()
+        if not low.endswith(".exe"):
             continue
-        for f in files:
-            if not f.lower().endswith(".exe"):
-                continue
-            full = os.path.join(root, f)
-            low = f.lower()
-            try:
-                score = os.path.getsize(full)
-            except OSError:
-                score = 0
-            if any(b in low for b in (
-                "unins", "setup", "crash", "redist", "vcredist", "directx",
-                "dotnet", "launcher", "cleanup", "touchup", "config",
-            )):
-                score //= 100
-            if score > best_score:
-                best_score, best = score, full
-    return best or ""
+        try:
+            score = os.path.getsize(full)
+        except OSError:
+            score = 0
+        if any(b in low for b in (
+            "unins", "setup", "crash", "redist", "vcredist", "directx",
+            "dotnet", "launcher", "cleanup", "touchup", "config",
+        )):
+            score //= 100
+        if score > best_score:
+            best_score, best = score, full
+    return best
 
 
 # ---------------------------------------------------------------------------

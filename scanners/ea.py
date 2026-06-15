@@ -24,9 +24,8 @@ Windows-only; returns [] elsewhere.
 """
 
 import os
-import glob
 
-from .common import Game, is_windows, env
+from .common import Game, is_windows, iter_files
 
 CANDIDATE_KEYS = [
     r"SOFTWARE\WOW6432Node\Origin Games",
@@ -62,26 +61,23 @@ def _looks_numeric_offer(s: str) -> bool:
 
 def _find_main_exe(install_dir: str) -> str:
     """Best-guess the game's primary exe inside its install folder."""
-    if not install_dir or not os.path.isdir(install_dir):
-        return ""
     exes = []
-    for root, _dirs, files in os.walk(install_dir):
-        depth = root[len(install_dir):].count(os.sep)
-        if depth > 2:  # don't descend too far
+    for full in iter_files(install_dir, max_depth=2):
+        low = os.path.basename(full).lower()
+        if not low.endswith(".exe"):
             continue
-        for f in files:
-            if f.lower().endswith(".exe"):
-                full = os.path.join(root, f)
-                low = f.lower()
-                # Penalise obvious non-game exes.
-                score = os.path.getsize(full) if os.path.exists(full) else 0
-                if any(b in low for b in (
-                    "unins", "setup", "crash", "report", "redist", "vcredist",
-                    "directx", "dotnet", "launcher", "cleanup", "touchup",
-                    "activation", "config", "settings",
-                )):
-                    score //= 100  # heavy penalty but not disqualifying
-                exes.append((score, full))
+        # Penalise obvious non-game exes.
+        try:
+            score = os.path.getsize(full)
+        except OSError:
+            score = 0
+        if any(b in low for b in (
+            "unins", "setup", "crash", "report", "redist", "vcredist",
+            "directx", "dotnet", "launcher", "cleanup", "touchup",
+            "activation", "config", "settings",
+        )):
+            score //= 100  # heavy penalty but not disqualifying
+        exes.append((score, full))
     if not exes:
         return ""
     exes.sort(reverse=True)  # biggest plausible exe wins

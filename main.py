@@ -31,8 +31,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from scanners import gog, epic, ubisoft, ea, xbox, battlenet
-from scanners.common import is_windows
+from scanners.common import is_windows, steam_appid
 from steam import shortcuts as sc
+from steam import artwork
 
 
 def steam_running():
@@ -91,6 +92,8 @@ def main():
     cfg = load_toml(args.config) if os.path.exists(args.config) else {}
     behaviour = cfg.get("behaviour", {})
     steam_cfg = cfg.get("steam", {})
+    art_cfg = cfg.get("artwork", {})
+    sgdb_key = (art_cfg.get("steamgriddb_key") or "").strip()
     dry = args.dry_run or behaviour.get("dry_run", False)
 
     games = run_scanners(cfg)
@@ -137,6 +140,18 @@ def main():
                 print(f"  backup: {b}")
         sc.save(path, merged)
         print(f"  written: {path}")
+
+        # Optional: download library art (capsule/hero/logo) from SteamGridDB.
+        # Local icons are already applied during merge(); this is the networked
+        # extra and only runs when an API key is configured.
+        if sgdb_key:
+            grid_dir = os.path.join(os.path.dirname(path), "grid")
+            sgdb = artwork.SteamGridDB(sgdb_key)
+            count = 0
+            for g in games:
+                appid = steam_appid(g.name, g.steam_exe())
+                count += artwork.fetch_grid(g, appid, grid_dir, sgdb)
+            print(f"  grid art: {count} new image(s) in {grid_dir}")
 
     if dry:
         print("\nDry run complete. No files changed.")

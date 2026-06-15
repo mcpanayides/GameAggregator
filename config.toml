@@ -35,6 +35,14 @@ battlenet_config = ""
 # (then prune by hand in Steam). Leave false for the game-filtered guess.
 include_all = false
 
+[artwork]
+# Small list icons are always applied for free from local files on disk.
+# To ALSO download library art (vertical capsule, hero banner, logo) from
+# SteamGridDB, paste a free API key from:
+#   https://www.steamgriddb.com/profile/preferences/api
+# Leave blank to skip the network download (local icons still apply).
+steamgriddb_key = ""
+
 [behaviour]
 # Add a Steam category/tag named after each launcher (GOG, Epic, ...).
 tag_by_launcher = true
