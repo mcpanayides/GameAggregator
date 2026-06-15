@@ -5,10 +5,23 @@ UWP games can't be launched by exe path — they're sandboxed. The only
 reliable launch route is the AppUserModelID via:
   explorer.exe shell:AppsFolder\<AppUserModelID>
 
-We enumerate installed packages with PowerShell (Get-AppxPackage) and
-filter to ones that look like games. This is heuristic: Microsoft doesn't
-flag "this is a game" cleanly, so we match against the Xbox/GamingApp
-families and packages installed under the gaming WindowsApps roots.
+Identifying *which* UWP packages are games is the hard part: Windows ships
+hundreds of system packages that all live under WindowsApps, so a blocklist
+can never keep up. Instead we use an ALLOWLIST of positive game signals:
+
+  1. The package installs under the Xbox games library root
+     (default C:\XboxGames, or any drive's XboxGames / "Xbox Games" folder).
+  2. The package signature kind is "Store" AND it is NOT published by
+     Microsoft's system identity (system apps are signed differently and
+     overwhelmingly sit in C:\Windows\SystemApps or %ProgramFiles%\WindowsApps
+     with a Microsoft.* family).
+  3. The manifest declares a hardware dependency / full-trust game runtime
+     (gaming packages depend on Microsoft.GamingServices or the
+     Microsoft.DirectX framework and carry an "xbox" app execution alias).
+
+A package must hit signal (1), OR signal (2)+(3) together, to be treated as
+a game. Everything else is dropped. include_all=True bypasses all filtering
+for debugging.
 
 Windows-only; returns [] elsewhere.
 """
@@ -17,25 +30,37 @@ import os
 import json
 import subprocess
 
-from .common import Game, is_windows
+from .common import Game, is_windows, env
 
-# PowerShell: list packages with their family name and the app id from the
-# manifest. We grab PackageFamilyName + the Applications Id to build the AUMID.
+# PowerShell: emit one row per launchable application with the fields we need
+# to decide whether it's a game and how to launch it.
 PS_SCRIPT = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 $out = @()
-Get-AppxPackage | ForEach-Object {
+Get-AppxPackage | Where-Object { -not $_.IsFramework -and -not $_.IsResourcePackage } | ForEach-Object {
     $pkg = $_
     $manifest = Get-AppxPackageManifest $pkg
     if ($manifest) {
+        # Collect declared dependencies (framework package names).
+        $deps = @()
+        if ($manifest.Package.Dependencies.PackageDependency) {
+            $deps = @($manifest.Package.Dependencies.PackageDependency | ForEach-Object { $_.Name })
+        }
         $apps = $manifest.Package.Applications.Application
         foreach ($app in $apps) {
             if ($app.Id) {
+                $cats = ''
+                if ($app.VisualElements -and $app.VisualElements.AppListEntry) {
+                    $cats = [string]$app.VisualElements.AppListEntry
+                }
                 $out += [PSCustomObject]@{
-                    Name   = $pkg.Name
-                    Family = $pkg.PackageFamilyName
-                    AppId  = $app.Id
-                    Install= $pkg.InstallLocation
+                    Name      = $pkg.Name
+                    Family    = $pkg.PackageFamilyName
+                    Publisher = $pkg.Publisher
+                    SignatureKind = [string]$pkg.SignatureKind
+                    AppId     = $app.Id
+                    Install   = $pkg.InstallLocation
+                    Deps      = ($deps -join ';')
                 }
             }
         }
@@ -44,28 +69,74 @@ Get-AppxPackage | ForEach-Object {
 $out | ConvertTo-Json -Compress
 """
 
-# Substrings that strongly suggest a game / are safe to skip (system apps).
-SKIP_HINTS = (
-    "Microsoft.Windows", "Microsoft.UI", "Microsoft.NET", "Microsoft.VCLibs",
-    "Microsoft.Services", "Microsoft.Advertising", "Microsoft.Xbox" + "App",
-    "windows.immersivecontrolpanel", "Microsoft.Store", "Microsoft.Edge",
-    "Clipchamp", "Microsoft.Paint", "Microsoft.ScreenSketch",
+# Framework dependencies that real Xbox/Game Pass games pull in.
+GAME_DEP_HINTS = (
+    "microsoft.gamingservices",
+    "microsoft.directx",
+    "microsoft.vclibs",   # weak on its own; only counts alongside others
 )
+
+# Microsoft's system-app publisher identity. System packages are signed under
+# this CN. Real third-party (and most Game Pass) titles are not.
+MS_SYSTEM_PUBLISHER = "cn=microsoft corporation, o=microsoft corporation"
+
+
+def _xbox_library_roots():
+    """Known Xbox games-library roots across all drives."""
+    roots = []
+    # Default + any per-drive XboxGames folder the user may have set.
+    for drive in "CDEFGHIJ":
+        for folder in ("XboxGames", "Xbox Games"):
+            p = f"{drive}:\\{folder}"
+            roots.append(p.lower())
+    return roots
+
+
+def _under_xbox_library(install: str, roots) -> bool:
+    il = (install or "").lower()
+    return any(il.startswith(r) for r in roots)
+
+
+def _looks_like_game(entry, roots) -> bool:
+    install = entry.get("Install", "") or ""
+    publisher = (entry.get("Publisher", "") or "").lower()
+    sig = (entry.get("SignatureKind", "") or "").lower()
+    deps = (entry.get("Deps", "") or "").lower()
+    name = (entry.get("Name", "") or "").lower()
+
+    # Signal 1: lives in the Xbox games library — strongest signal, accept.
+    if _under_xbox_library(install, roots):
+        return True
+
+    # Never accept anything installed under the Windows dir or system apps.
+    il = install.lower()
+    if "\\windows\\systemapps" in il or il.startswith(os.environ.get("WINDIR", "c:\\windows").lower()):
+        return False
+
+    # Signal 2: not a Microsoft system-signed package.
+    is_system = (sig == "system") or (publisher == MS_SYSTEM_PUBLISHER and "gamingapp" not in name)
+    if is_system:
+        return False
+
+    # Signal 3: declares a gaming framework dependency.
+    dep_hits = sum(1 for h in GAME_DEP_HINTS if h in deps)
+    has_gaming_services = "microsoft.gamingservices" in deps or "microsoft.directx" in deps
+
+    # Accept store-signed, non-system packages that pull in gaming frameworks.
+    if sig == "store" and (has_gaming_services or dep_hits >= 2):
+        return True
+
+    return False
 
 
 def scan(include_all: bool = False):
-    """
-    include_all=False keeps only things that look game-ish (installed under a
-    games WindowsApps folder, or not matching system app hints). Set True to
-    dump everything and filter by hand.
-    """
     if not is_windows():
         return []
 
     try:
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-Command", PS_SCRIPT],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=180,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         print(f"  [Xbox] PowerShell call failed: {e}")
@@ -78,36 +149,40 @@ def scan(include_all: bool = False):
         data = json.loads(raw)
     except json.JSONDecodeError:
         return []
-    if isinstance(data, dict):  # single result isn't wrapped in a list
+    if isinstance(data, dict):
         data = [data]
 
+    roots = _xbox_library_roots()
     games = []
+    seen = set()
     for entry in data:
-        name = entry.get("Name", "")
         family = entry.get("Family", "")
         app_id = entry.get("AppId", "")
-        install = entry.get("Install", "") or ""
-
         if not (family and app_id):
             continue
-        if not include_all and any(h.lower() in name.lower() for h in SKIP_HINTS):
-            continue
-        # Heuristic: real games usually sit under a "WindowsApps" gaming root.
-        looks_gamey = (
-            include_all
-            or "xboxgames" in install.lower()
-            or "\\windowsapps\\" in install.lower()
-        )
-        if not looks_gamey:
+
+        if not include_all and not _looks_like_game(entry, roots):
             continue
 
         aumid = f"{family}!{app_id}"
+        if aumid in seen:
+            continue
+        seen.add(aumid)
+
+        install = entry.get("Install", "") or ""
+        # Prefer a clean display name: use the install folder if it's an Xbox
+        # library game (folder names there are human-readable), else the family.
+        name = entry.get("Name", "")
+        if _under_xbox_library(install, roots) and install:
+            folder = os.path.basename(os.path.normpath(install))
+            if folder:
+                name = folder
+
         games.append(Game(
             name=name,
             launcher="Xbox",
-            # Launch UWP via the apps folder shell path.
             launch_uri=f"shell:AppsFolder\\{aumid}",
-            exe=f'"explorer.exe"',  # explorer resolves the shell: path
+            exe='"explorer.exe"',
             install_dir=install,
             start_dir=f'"{install}"' if install else "",
         ))
