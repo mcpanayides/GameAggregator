@@ -1,0 +1,44 @@
+# GameAggregator configuration
+# Every path here is OPTIONAL. Leave a value as "" (empty) to let the tool
+# auto-detect it. Only fill these in if auto-detection guesses wrong on your
+# machine. Use DOUBLE backslashes or forward slashes in paths.
+
+[launchers]
+# Turn scanners on/off. Set to false to skip one entirely.
+gog        = true
+epic       = true
+ubisoft    = true
+ea         = true
+xbox       = true
+battlenet  = true
+
+[steam]
+# Leave blank to read SteamPath from the registry. Override if needed, e.g.:
+# path = "D:/Steam"
+path = ""
+
+# If true, the tool will refuse to write while Steam is running (recommended).
+# Steam overwrites shortcuts.vdf on exit, so writes while it's open are lost.
+require_steam_closed = true
+
+[paths]
+# Override only if auto-detection fails. Examples shown commented out.
+# gog_db          = "C:/ProgramData/GOG.com/Galaxy/storage/galaxy-2.0.db"
+# epic_manifests  = "C:/ProgramData/Epic/EpicGamesLauncher/Data/Manifests"
+# battlenet_config= "C:/ProgramData/Battle.net/Battle.net.config"
+gog_db           = ""
+epic_manifests   = ""
+battlenet_config = ""
+
+[xbox]
+# Xbox detection is heuristic. Set include_all = true to import EVERY UWP app
+# (then prune by hand in Steam). Leave false for the game-filtered guess.
+include_all = false
+
+[behaviour]
+# Add a Steam category/tag named after each launcher (GOG, Epic, ...).
+tag_by_launcher = true
+# Make a timestamped backup of shortcuts.vdf before every write.
+backup = true
+# dry_run: scan and report only, write nothing. Great for the first run.
+dry_run = false
